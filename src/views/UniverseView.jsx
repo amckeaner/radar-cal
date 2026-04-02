@@ -1,383 +1,410 @@
 import { useEffect, useRef, useState } from 'react'
+import * as d3 from 'd3'
+import { useEvents, useTasks, useNotesWithContent } from '../db/hooks'
+import { CATEGORIES, getCategoryById } from '../context/AppContext'
 
-// ── Demo nodes for the Universe (will come from DB later) ─────────────────────
-const DEMO_NODES = [
-  // Events
-  { id: 'e1', type: 'event',    label: 'Team Standup',       category: 'work',     daysFromNow:  0.3  },
-  { id: 'e2', type: 'event',    label: 'Project Deadline',   category: 'work',     daysFromNow:  4    },
-  { id: 'e3', type: 'event',    label: 'Quarterly Review',   category: 'work',     daysFromNow:  28   },
-  { id: 'e4', type: 'event',    label: 'Dentist Appt',       category: 'health',   daysFromNow:  2    },
-  { id: 'e5', type: 'event',    label: "Mom's Birthday",     category: 'personal', daysFromNow:  12   },
-  { id: 'e6', type: 'event',    label: 'Dinner with Alex',   category: 'personal', daysFromNow:  6    },
-  { id: 'e7', type: 'event',    label: 'Sprint Planning',    category: 'work',     daysFromNow: -3    },
-  { id: 'e8', type: 'event',    label: 'Annual Physical',    category: 'health',   daysFromNow: -14   },
-  // Tasks
-  { id: 't1', type: 'task',     label: 'Write Report',       category: 'work',     daysFromNow:  3    },
-  { id: 't2', type: 'task',     label: 'Buy Groceries',      category: 'personal', daysFromNow:  1    },
-  { id: 't3', type: 'task',     label: 'Car Service',        category: 'other',    daysFromNow:  18   },
-  // Notes
-  { id: 'n1', type: 'note',     label: 'Standup Notes',      category: 'work',     daysFromNow:  0.3  },
-  { id: 'n2', type: 'note',     label: 'Birthday Ideas',     category: 'personal', daysFromNow:  12   },
-  { id: 'n3', type: 'note',     label: 'Q3 Retro Notes',     category: 'work',     daysFromNow: -3    },
-  // Days
-  { id: 'd1', type: 'day',      label: 'Today',              category: 'other',    daysFromNow:  0    },
-  { id: 'd2', type: 'day',      label: 'Last Week',          category: 'other',    daysFromNow: -7    },
-  { id: 'd3', type: 'day',      label: 'Next Month',         category: 'other',    daysFromNow:  30   },
-]
-
-// Edges (connections between nodes)
-const DEMO_EDGES = [
-  { source: 'n1', target: 'e1' },
-  { source: 'n2', target: 'e5' },
-  { source: 'n3', target: 'e7' },
-  { source: 't1', target: 'e2' },
-  { source: 'd1', target: 'e1' },
-  { source: 'd1', target: 't1' },
-  { source: 'd1', target: 't2' },
-  { source: 'd2', target: 'e7' },
-  { source: 'd2', target: 'n3' },
-  { source: 'd3', target: 'e3' },
-]
-
-const TYPE_CONFIG = {
-  event: { color: '#00ff41', shape: 'circle',   baseSize: 10 },
-  task:  { color: '#fbbf24', shape: 'diamond',  baseSize: 9  },
-  note:  { color: '#60a5fa', shape: 'circle',   baseSize: 7  },
-  day:   { color: '#a78bfa', shape: 'hexagon',  baseSize: 14 },
+// ── Node appearance by type ───────────────────────────────────────────────────
+const TYPE_CFG = {
+  event: { baseR: 10, shape: 'circle',  label: 'EVENT' },
+  task:  { baseR: 9,  shape: 'diamond', label: 'TASK'  },
+  note:  { baseR: 7,  shape: 'circle',  label: 'NOTE'  },
 }
 
-const CAT_COLOR = {
-  work:     '#00ff41',
-  personal: '#60a5fa',
-  health:   '#f472b6',
-  other:    '#fbbf24',
+function daysFromNow(d) {
+  if (!d) return 0
+  return (new Date(d) - new Date()) / (1000 * 60 * 60 * 24)
 }
 
-// Simple force simulation (no D3 dependency for Stage 1)
-function initPositions(nodes, w, h) {
-  const cx = w / 2, cy = h / 2
-  return nodes.map(n => {
-    // X axis = time (past left, future right)
-    const timeX = cx + n.daysFromNow * (w / 2) / 45
-    // Y axis = cluster by category
-    const catIndex = ['work', 'personal', 'health', 'other'].indexOf(n.category)
-    const catY = cy + (catIndex - 1.5) * (h / 5)
-    // Add jitter by type
-    const typeJitter = { event: 0, task: 40, note: -40, day: -10 }
-    const seed = n.id.charCodeAt(1) * 17
-    return {
-      ...n,
-      x: timeX + ((seed % 60) - 30),
-      y: catY + (typeJitter[n.type] || 0) + ((seed % 40) - 20),
-      vx: 0, vy: 0,
-    }
+function buildGraphData(events, tasks, notes) {
+  const nodes = []
+  const links = []
+
+  events.forEach(e => {
+    const cat = getCategoryById(e.category)
+    nodes.push({
+      id: `e-${e.id}`,
+      dbId: e.id,
+      type: 'event',
+      label: e.title,
+      category: e.category,
+      color: cat?.color || '#00ff41',
+      days: daysFromNow(e.start),
+      importance: e.importance || 3,
+      data: e,
+    })
   })
+
+  tasks.forEach(t => {
+    const cat = getCategoryById(t.category)
+    nodes.push({
+      id: `t-${t.id}`,
+      dbId: t.id,
+      type: 'task',
+      label: t.title,
+      category: t.category,
+      color: cat?.color || '#fbbf24',
+      days: daysFromNow(t.dueDate),
+      importance: t.importance || 3,
+      data: t,
+    })
+  })
+
+  notes.forEach(n => {
+    nodes.push({
+      id: `n-${n.id}`,
+      dbId: n.id,
+      type: 'note',
+      label: n.content?.split('\n')[0]?.slice(0, 40) || '(note)',
+      category: null,
+      color: '#60a5fa',
+      days: daysFromNow(n.date),
+      importance: 2,
+      data: n,
+    })
+
+    // Auto-link notes to events/tasks via @/# tags
+    const atTags   = [...(n.content?.matchAll(/@([\w][^\s@#]{0,40})/g) || [])]
+    const hashTags = [...(n.content?.matchAll(/#([\w][^\s@#]{0,40})/g) || [])]
+
+    atTags.forEach(m => {
+      const tagText = m[1].toLowerCase()
+      const match = events.find(e => e.title.toLowerCase().includes(tagText))
+      if (match) links.push({ source: `n-${n.id}`, target: `e-${match.id}`, strength: 0.6 })
+    })
+    hashTags.forEach(m => {
+      const tagText = m[1].toLowerCase()
+      const match = tasks.find(t => t.title.toLowerCase().includes(tagText))
+      if (match) links.push({ source: `n-${n.id}`, target: `t-${match.id}`, strength: 0.6 })
+    })
+  })
+
+  // Link tasks to events in same category within 7 days of each other
+  tasks.forEach(t => {
+    events.forEach(e => {
+      if (e.category === t.category && Math.abs(daysFromNow(e.start) - daysFromNow(t.dueDate)) < 7) {
+        links.push({ source: `t-${t.id}`, target: `e-${e.id}`, strength: 0.2 })
+      }
+    })
+  })
+
+  return { nodes, links }
 }
 
 export default function UniverseView() {
-  const canvasRef = useRef(null)
-  const stateRef  = useRef({ nodes: [], zoom: 1, panX: 0, panY: 0, drag: null, hovered: null })
-  const [hovered, setHovered] = useState(null)
-  const [info, setInfo]       = useState(null)
-  const sizeRef = useRef({ w: 800, h: 600 })
-  const animRef = useRef(null)
+  const svgRef  = useRef(null)
+  const simRef  = useRef(null)
+  const nodesRef = useRef([])
+  const linksRef = useRef([])
+  const [info, setInfo]   = useState(null)
+  const [hov,  setHov]    = useState(null)
+  const transform = useRef(d3.zoomIdentity)
 
+  const events = useEvents() || []
+  const tasks  = useTasks()  || []
+  const notes  = useNotesWithContent() || []
+
+  // Rebuild simulation when data changes
   useEffect(() => {
-    const canvas = canvasRef.current
-    if (!canvas) return
-    const parent = canvas.parentElement
-    const obs = new ResizeObserver(entries => {
-      const { width, height } = entries[0].contentRect
-      canvas.width  = width
-      canvas.height = height
-      sizeRef.current = { w: width, h: height }
-      stateRef.current.nodes = initPositions(DEMO_NODES, width, height)
+    const svg = d3.select(svgRef.current)
+    if (!svgRef.current) return
+    const { width, height } = svgRef.current.getBoundingClientRect()
+    if (!width) return
+
+    const { nodes, links } = buildGraphData(events, tasks, notes)
+    nodesRef.current = nodes
+    linksRef.current = links
+
+    const cx = width / 2, cy = height / 2
+
+    if (simRef.current) simRef.current.stop()
+
+    // Seed x positions from time axis, y from category
+    nodes.forEach(n => {
+      const catIdx = CATEGORIES.findIndex(c => c.id === n.category)
+      n.x = cx + n.days * (width / 2) / 55 + (Math.random() - 0.5) * 40
+      n.y = cy + (catIdx >= 0 ? (catIdx - 1.5) * (height / 5) : 0) + (Math.random() - 0.5) * 30
     })
-    obs.observe(parent)
-    stateRef.current.nodes = initPositions(DEMO_NODES, canvas.width, canvas.height)
-    return () => obs.disconnect()
-  }, [])
 
-  // Draw loop
-  useEffect(() => {
-    const canvas = canvasRef.current
-    if (!canvas) return
-    const ctx = canvas.getContext('2d')
+    simRef.current = d3.forceSimulation(nodes)
+      .force('link',    d3.forceLink(links).id(d => d.id).distance(80).strength(d => d.strength || 0.3))
+      .force('collide', d3.forceCollide(d => TYPE_CFG[d.type]?.baseR * 1.8 + 4).strength(0.7))
+      .force('charge',  d3.forceManyBody().strength(-80))
+      .force('timeX',   d3.forceX(d => cx + d.days * (width / 2) / 55).strength(0.25))
+      .force('catY',    d3.forceY(d => {
+        const ci = CATEGORIES.findIndex(c => c.id === d.category)
+        return cy + (ci >= 0 ? (ci - 1.5) * (height / 5) : 0)
+      }).strength(0.2))
+      .alphaDecay(0.02)
+      .on('tick', renderFrame)
 
-    function draw() {
-      const { w, h } = sizeRef.current
-      const { nodes, zoom, panX, panY, hovered: hovId } = stateRef.current
-      canvas.width  = w
-      canvas.height = h
+    function renderFrame() {
+      const g = svgRef.current?.querySelector('#nodes-group')
+      const l = svgRef.current?.querySelector('#links-group')
+      if (!g || !l) return
 
-      ctx.clearRect(0, 0, w, h)
-
-      // Background gradient
-      const bg = ctx.createRadialGradient(w/2, h/2, 0, w/2, h/2, Math.max(w,h)/1.5)
-      bg.addColorStop(0, '#0d0d1a')
-      bg.addColorStop(1, '#05050f')
-      ctx.fillStyle = bg
-      ctx.fillRect(0, 0, w, h)
-
-      ctx.save()
-      ctx.translate(panX, panY)
-      ctx.scale(zoom, zoom)
-
-      // ── Star field ──
-      ctx.fillStyle = '#ffffff'
-      for (let i = 0; i < 120; i++) {
-        const sx = ((i * 137.508 * 3) % w)
-        const sy = ((i * 97.123  * 3) % h)
-        const sr = (i % 3 === 0) ? 1 : 0.5
-        ctx.globalAlpha = 0.1 + (i % 5) * 0.04
-        ctx.beginPath()
-        ctx.arc(sx, sy, sr, 0, Math.PI * 2)
-        ctx.fill()
-      }
-      ctx.globalAlpha = 1
-
-      // ── Time axis ──
-      ctx.strokeStyle = '#ffffff10'
-      ctx.lineWidth = 1
-      ctx.setLineDash([4, 8])
-      ctx.beginPath()
-      ctx.moveTo(0, h / 2)
-      ctx.lineTo(w, h / 2)
-      ctx.stroke()
-      ctx.setLineDash([])
-
-      // NOW marker
-      ctx.strokeStyle = '#ffffff20'
-      ctx.lineWidth = 1
-      ctx.setLineDash([2, 4])
-      ctx.beginPath()
-      ctx.moveTo(w / 2, 0)
-      ctx.lineTo(w / 2, h)
-      ctx.stroke()
-      ctx.setLineDash([])
-      ctx.fillStyle = '#ffffff30'
-      ctx.font = '10px JetBrains Mono, monospace'
-      ctx.letterSpacing = '2px'
-      ctx.fillText('NOW', w / 2 + 6, 18)
-      ctx.fillText('PAST ←', 60, 18)
-      ctx.fillText('→ FUTURE', w - 100, 18)
-
-      // ── Edges ──
-      DEMO_EDGES.forEach(edge => {
-        const src = nodes.find(n => n.id === edge.source)
-        const tgt = nodes.find(n => n.id === edge.target)
-        if (!src || !tgt) return
-        ctx.beginPath()
-        ctx.moveTo(src.x, src.y)
-        ctx.lineTo(tgt.x, tgt.y)
-        ctx.strokeStyle = '#ffffff08'
-        ctx.lineWidth = 1
-        ctx.stroke()
+      // Update link positions
+      const linkEls = l.querySelectorAll('line')
+      links.forEach((lk, i) => {
+        const el = linkEls[i]
+        if (!el) return
+        el.setAttribute('x1', lk.source.x)
+        el.setAttribute('y1', lk.source.y)
+        el.setAttribute('x2', lk.target.x)
+        el.setAttribute('y2', lk.target.y)
       })
 
-      // ── Nodes ──
-      nodes.forEach(node => {
-        const cfg = TYPE_CONFIG[node.type]
-        const isHov = node.id === hovId
-        const r = cfg.baseSize * (isHov ? 1.4 : 1)
-        const col = CAT_COLOR[node.category] || cfg.color
-
-        // Glow
-        if (isHov) {
-          ctx.shadowColor = col
-          ctx.shadowBlur = 18
-        }
-
-        // Shape
-        ctx.fillStyle = col
-        ctx.globalAlpha = isHov ? 1 : 0.8
-        ctx.beginPath()
-
-        if (cfg.shape === 'circle') {
-          ctx.arc(node.x, node.y, r, 0, Math.PI * 2)
-        } else if (cfg.shape === 'diamond') {
-          ctx.moveTo(node.x, node.y - r)
-          ctx.lineTo(node.x + r, node.y)
-          ctx.lineTo(node.x, node.y + r)
-          ctx.lineTo(node.x - r, node.y)
-          ctx.closePath()
-        } else if (cfg.shape === 'hexagon') {
-          for (let i = 0; i < 6; i++) {
-            const a = (i * Math.PI) / 3 - Math.PI / 6
-            const fn = i === 0 ? ctx.moveTo.bind(ctx) : ctx.lineTo.bind(ctx)
-            fn(node.x + r * Math.cos(a), node.y + r * Math.sin(a))
-          }
-          ctx.closePath()
-        }
-        ctx.fill()
-
-        ctx.shadowBlur = 0
-        ctx.globalAlpha = 1
-
-        // Inner dot
-        ctx.fillStyle = '#05050f'
-        ctx.beginPath()
-        ctx.arc(node.x, node.y, r * 0.3, 0, Math.PI * 2)
-        ctx.fill()
-
-        // Label
-        if (isHov || zoom > 1.2) {
-          ctx.fillStyle = isHov ? '#ffffff' : '#ffffff80'
-          ctx.font = `${isHov ? 11 : 9}px JetBrains Mono, monospace`
-          ctx.fillText(node.label, node.x + r + 4, node.y + 4)
-        }
-      })
-
-      ctx.restore()
-      animRef.current = requestAnimationFrame(draw)
-    }
-
-    animRef.current = requestAnimationFrame(draw)
-    return () => cancelAnimationFrame(animRef.current)
-  }, [])
-
-  // ── Mouse interactions ──
-  useEffect(() => {
-    const canvas = canvasRef.current
-    if (!canvas) return
-
-    function getWorldPos(e) {
-      const rect = canvas.getBoundingClientRect()
-      const { zoom, panX, panY } = stateRef.current
-      return {
-        x: (e.clientX - rect.left - panX) / zoom,
-        y: (e.clientY - rect.top  - panY) / zoom,
-      }
-    }
-
-    function findNode(wx, wy) {
-      return stateRef.current.nodes.find(n => {
-        const cfg = TYPE_CONFIG[n.type]
-        return Math.hypot(wx - n.x, wy - n.y) < cfg.baseSize * 1.8
+      // Update node positions
+      nodes.forEach(n => {
+        const el = g.querySelector(`[data-node="${n.id}"]`)
+        if (el) el.setAttribute('transform', `translate(${n.x},${n.y})`)
       })
     }
 
-    function onMouseMove(e) {
-      const { x, y } = getWorldPos(e)
-      const node = findNode(x, y)
-      stateRef.current.hovered = node?.id || null
-      setHovered(node || null)
+    // Initial render of static elements
+    renderStaticElements(svg, nodes, links, width, height)
 
-      if (stateRef.current.drag) {
-        stateRef.current.panX += e.movementX
-        stateRef.current.panY += e.movementY
-      }
-      canvas.style.cursor = node ? 'pointer' : stateRef.current.drag ? 'grabbing' : 'grab'
-    }
+    return () => simRef.current?.stop()
+  }, [events, tasks, notes])
 
-    function onMouseDown(e) {
-      const { x, y } = getWorldPos(e)
-      const node = findNode(x, y)
-      if (node) {
-        setInfo(node)
+  function renderStaticElements(svg, nodes, links, w, h) {
+    const cx = w / 2, cy = h / 2
+
+    // Clear old content
+    svg.select('#links-group').selectAll('*').remove()
+    svg.select('#nodes-group').selectAll('*').remove()
+    svg.select('#labels-group').selectAll('*').remove()
+
+    // Links
+    svg.select('#links-group')
+      .selectAll('line')
+      .data(links)
+      .join('line')
+      .attr('stroke', '#ffffff0a')
+      .attr('stroke-width', 1)
+
+    // Node groups
+    const nodeGs = svg.select('#nodes-group')
+      .selectAll('g')
+      .data(nodes, d => d.id)
+      .join('g')
+      .attr('data-node', d => d.id)
+      .attr('transform', d => `translate(${d.x},${d.y})`)
+      .style('cursor', 'pointer')
+      .on('mouseenter', (event, d) => setHov(d))
+      .on('mouseleave', () => setHov(null))
+      .on('click', (event, d) => { event.stopPropagation(); setInfo(d) })
+
+    // Node shapes
+    nodeGs.each(function(d) {
+      const g = d3.select(this)
+      const r = TYPE_CFG[d.type]?.baseR || 8
+      const col = d.color
+
+      if (d.type === 'task') {
+        g.append('polygon')
+          .attr('points', `0,${-r} ${r},0 0,${r} ${-r},0`)
+          .attr('fill', col)
+          .attr('opacity', 0.85)
       } else {
-        stateRef.current.drag = true
-        canvas.style.cursor = 'grabbing'
+        g.append('circle').attr('r', r).attr('fill', col).attr('opacity', 0.85)
       }
-    }
 
-    function onMouseUp() {
-      stateRef.current.drag = false
-      canvas.style.cursor = 'grab'
-    }
+      // Inner dot
+      g.append('circle').attr('r', r * 0.25).attr('fill', '#05050f')
 
-    function onWheel(e) {
-      e.preventDefault()
-      const rect = canvas.getBoundingClientRect()
-      const mx = e.clientX - rect.left
-      const my = e.clientY - rect.top
-      const delta = e.deltaY < 0 ? 1.1 : 0.9
-      const { zoom, panX, panY } = stateRef.current
-      const newZoom = Math.max(0.2, Math.min(8, zoom * delta))
-      stateRef.current.panX = mx - (mx - panX) * (newZoom / zoom)
-      stateRef.current.panY = my - (my - panY) * (newZoom / zoom)
-      stateRef.current.zoom = newZoom
-    }
+      // Glow ring (hidden by default, shown on hover)
+      if (d.type === 'task') {
+        g.append('polygon')
+          .attr('class', 'hover-ring')
+          .attr('points', `0,${-(r+5)} ${r+5},0 0,${r+5} ${-(r+5)},0`)
+          .attr('fill', 'none')
+          .attr('stroke', col)
+          .attr('stroke-width', 1)
+          .attr('opacity', 0.25)
+      } else {
+        g.append('circle')
+          .attr('class', 'hover-ring')
+          .attr('r', r + 5)
+          .attr('fill', 'none')
+          .attr('stroke', col)
+          .attr('stroke-width', 1)
+          .attr('opacity', 0.25)
+      }
+    })
+  }
 
-    canvas.addEventListener('mousemove', onMouseMove)
-    canvas.addEventListener('mousedown', onMouseDown)
-    canvas.addEventListener('mouseup', onMouseUp)
-    canvas.addEventListener('wheel', onWheel, { passive: false })
-    return () => {
-      canvas.removeEventListener('mousemove', onMouseMove)
-      canvas.removeEventListener('mousedown', onMouseDown)
-      canvas.removeEventListener('mouseup', onMouseUp)
-      canvas.removeEventListener('wheel', onWheel)
-    }
+  // ── Set up zoom/pan ────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!svgRef.current) return
+    const svg = d3.select(svgRef.current)
+    const zoomLayer = svg.select('#zoom-layer')
+
+    const zoom = d3.zoom()
+      .scaleExtent([0.1, 12])
+      .on('zoom', e => {
+        transform.current = e.transform
+        zoomLayer.attr('transform', e.transform)
+      })
+
+    svg.call(zoom)
+    svg.on('click', () => setInfo(null))
+
+    // Store reset fn
+    svgRef.current._zoomReset = () => svg.transition().duration(500).call(zoom.transform, d3.zoomIdentity)
+    svgRef.current._zoomIn    = () => svg.transition().duration(200).call(zoom.scaleBy, 1.4)
+    svgRef.current._zoomOut   = () => svg.transition().duration(200).call(zoom.scaleBy, 0.72)
+
+    return () => svg.on('zoom', null).on('click', null)
   }, [])
 
   return (
     <div className="relative w-full h-full overflow-hidden bg-[#05050f]">
-      <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" style={{ cursor: 'grab' }} />
+      <svg ref={svgRef} className="w-full h-full" style={{ cursor: 'grab' }}>
+        <defs>
+          <radialGradient id="bgGrad" cx="50%" cy="50%" r="55%">
+            <stop offset="0%"   stopColor="#0d0d1a" />
+            <stop offset="100%" stopColor="#05050f" />
+          </radialGradient>
+          <filter id="nodeGlow" x="-60%" y="-60%" width="220%" height="220%">
+            <feGaussianBlur in="SourceGraphic" stdDeviation="3" result="b" />
+            <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
+          </filter>
+        </defs>
 
-      {/* ── Node type legend ── */}
-      <div className="absolute bottom-4 left-4 font-mono text-xs text-white/30 space-y-1 no-select pointer-events-none">
-        {Object.entries(TYPE_CONFIG).map(([type, cfg]) => (
-          <div key={type} className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full inline-block" style={{ background: cfg.color }} />
-            <span>{type.toUpperCase()}</span>
-          </div>
-        ))}
-        <div className="mt-2 text-[10px] opacity-60">SCROLL TO ZOOM · DRAG TO PAN</div>
+        {/* Background */}
+        <rect width="100%" height="100%" fill="url(#bgGrad)" />
+
+        {/* Stars (static, outside zoom) */}
+        <g id="stars" pointerEvents="none">
+          {Array.from({ length: 160 }, (_, i) => (
+            <circle key={i}
+              cx={(i * 137.5 * 3) % 2000}
+              cy={(i * 97.1  * 3) % 1200}
+              r={i % 5 === 0 ? 1 : 0.5}
+              fill="white"
+              opacity={0.04 + (i % 7) * 0.015}
+            />
+          ))}
+        </g>
+
+        {/* Zoom layer (everything pannable/zoomable) */}
+        <g id="zoom-layer">
+          {/* Category swim lanes */}
+          {CATEGORIES.map((cat, i) => (
+            <rect key={cat.id}
+              x={-5000} y={0}
+              width={10000} height={1}
+              fill={cat.color}
+              opacity="0.0"
+              data-lane={cat.id}
+            />
+          ))}
+
+          {/* Links */}
+          <g id="links-group" />
+
+          {/* Nodes */}
+          <g id="nodes-group" filter="url(#nodeGlow)" />
+
+          {/* Labels group (rendered over everything) */}
+          <g id="labels-group" pointerEvents="none" />
+        </g>
+      </svg>
+
+      {/* ── Overlay: axis labels (outside zoom) ── */}
+      <div className="absolute top-3 left-0 right-0 flex justify-between px-8 font-mono text-[10px] text-white/20 tracking-widest pointer-events-none">
+        <span>← PAST</span>
+        <span>NOW</span>
+        <span>FUTURE →</span>
       </div>
 
-      {/* ── Zoom controls ── */}
+      {/* ── Category lane labels (left side) ── */}
+      <div className="absolute left-3 top-0 bottom-0 flex flex-col justify-around font-mono pointer-events-none py-8">
+        {CATEGORIES.map(cat => (
+          <span key={cat.id} className="text-[9px] tracking-widest" style={{ color: cat.color, opacity: 0.35 }}>
+            {cat.label}
+          </span>
+        ))}
+      </div>
+
+      {/* ── Legend ── */}
+      <div className="absolute bottom-4 left-8 font-mono text-[10px] text-white/25 space-y-1 pointer-events-none">
+        <div className="flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-[#00ff41]" /> EVENT</div>
+        <div className="flex items-center gap-2">
+          <span className="w-2 h-2 inline-block bg-[#fbbf24]" style={{ clipPath: 'polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%)' }} /> TASK
+        </div>
+        <div className="flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-[#60a5fa]" /> NOTE</div>
+        <div className="mt-1 opacity-60">SCROLL TO ZOOM · DRAG TO PAN</div>
+      </div>
+
+      {/* ── Zoom buttons ── */}
       <div className="absolute top-4 right-4 flex flex-col gap-1">
         {[
-          { label: '+', fn: () => { stateRef.current.zoom = Math.min(8, stateRef.current.zoom * 1.3) } },
-          { label: '⟲', fn: () => { stateRef.current.zoom = 1; stateRef.current.panX = 0; stateRef.current.panY = 0 } },
-          { label: '−', fn: () => { stateRef.current.zoom = Math.max(0.2, stateRef.current.zoom * 0.77) } },
-        ].map(btn => (
-          <button
-            key={btn.label}
-            onClick={btn.fn}
-            className="w-8 h-8 bg-white/5 hover:bg-white/10 border border-white/10 rounded text-white/50 hover:text-white/80 text-sm font-mono transition-colors"
-          >
-            {btn.label}
+          { label: '+', fn: () => svgRef.current?._zoomIn?.()  },
+          { label: '⟲', fn: () => svgRef.current?._zoomReset?.() },
+          { label: '−', fn: () => svgRef.current?._zoomOut?.() },
+        ].map(b => (
+          <button key={b.label} onClick={b.fn}
+            className="w-8 h-8 bg-white/5 hover:bg-white/10 border border-white/10 rounded text-white/50 hover:text-white/80 text-sm font-mono transition-colors">
+            {b.label}
           </button>
         ))}
       </div>
 
-      {/* ── Selected node detail ── */}
-      {info && (
-        <div className="absolute left-4 top-4 w-60 bg-[#0d0d1a] border border-[#a78bfa33] rounded-lg p-4 font-mono text-sm shadow-xl z-20">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-[#a78bfa] text-[10px] tracking-widest">NODE INFO</span>
-            <button onClick={() => setInfo(null)} className="text-white/30 hover:text-white/70 text-lg leading-none">×</button>
-          </div>
-          <p className="text-white font-medium mb-2">{info.label}</p>
-          <div className="space-y-1 text-xs text-white/50">
-            <div className="flex justify-between">
-              <span>TYPE</span>
-              <span style={{ color: TYPE_CONFIG[info.type]?.color }}>{info.type.toUpperCase()}</span>
-            </div>
-            <div className="flex justify-between">
-              <span>CATEGORY</span>
-              <span style={{ color: CAT_COLOR[info.category] }}>{info.category.toUpperCase()}</span>
-            </div>
-            <div className="flex justify-between">
-              <span>TIME</span>
-              <span className="text-white/80">
-                {info.daysFromNow === 0
-                  ? 'TODAY'
-                  : info.daysFromNow > 0
-                  ? `+${info.daysFromNow}d`
-                  : `${info.daysFromNow}d`}
-              </span>
-            </div>
-          </div>
+      {/* ── Hover tooltip ── */}
+      {hov && !info && (
+        <div className="absolute bottom-12 left-1/2 -translate-x-1/2 bg-[#0d0d1a]/95 border border-white/10 rounded px-3 py-1.5 text-xs font-mono text-white/70 pointer-events-none whitespace-nowrap shadow-xl">
+          <span style={{ color: hov.color }}>{TYPE_CFG[hov.type]?.label}</span>
+          <span className="text-white/40 mx-1.5">·</span>
+          {hov.label}
         </div>
       )}
 
-      {/* ── Hover tooltip ── */}
-      {hovered && !info && (
-        <div className="absolute bottom-12 left-1/2 -translate-x-1/2 bg-[#0d0d1a]/90 border border-white/10 rounded px-3 py-1.5 text-xs font-mono text-white/70 pointer-events-none">
-          {hovered.label}
+      {/* ── Node detail panel ── */}
+      {info && (
+        <div className="absolute left-8 top-8 w-64 bg-[#0d0d1a]/95 border border-[#a78bfa33] rounded-xl p-4 font-mono text-sm shadow-2xl backdrop-blur-sm">
+          <div className="flex justify-between mb-3">
+            <span className="text-[10px] tracking-widest" style={{ color: info.color }}>
+              {TYPE_CFG[info.type]?.label || 'NODE'}
+            </span>
+            <button onClick={() => setInfo(null)} className="text-white/30 hover:text-white text-xl leading-none">×</button>
+          </div>
+          <p className="text-white font-medium mb-3 leading-snug">{info.label}</p>
+          <div className="space-y-1.5 text-xs text-white/50">
+            {info.category && (
+              <div className="flex justify-between">
+                <span>CATEGORY</span>
+                <span style={{ color: getCategoryById(info.category)?.color }}>
+                  {getCategoryById(info.category)?.label}
+                </span>
+              </div>
+            )}
+            {(info.data?.start || info.data?.dueDate || info.data?.date) && (
+              <div className="flex justify-between">
+                <span>DATE</span>
+                <span className="text-white/70">
+                  {new Date(((info.data.start || info.data.dueDate || info.data.date) + 'T12:00:00').slice(0,19))
+                    .toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                </span>
+              </div>
+            )}
+            <div className="flex justify-between">
+              <span>TIME</span>
+              <span className="text-white/70">
+                {info.days > 0
+                  ? `+${Math.round(info.days)}d`
+                  : info.days < 0
+                  ? `${Math.round(info.days)}d ago`
+                  : 'TODAY'}
+              </span>
+            </div>
+            {info.data?.importance && (
+              <div className="flex justify-between">
+                <span>IMPORTANCE</span>
+                <span>{'█'.repeat(info.data.importance)}{'░'.repeat(5-info.data.importance)}</span>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>
