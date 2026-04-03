@@ -6,7 +6,7 @@ import {
   addEvent, addTask, toggleTask,
   expandRecurringEvents,
 } from '../db/hooks'
-import { CATEGORIES, getCategoryById } from '../context/AppContext'
+import { useCategories, useApp, useRadarSettings, getCategoryById } from '../context/AppContext'
 import EventModal    from '../components/EventModal'
 import TaskModal     from '../components/TaskModal'
 import PriorityList  from '../components/PriorityList'
@@ -110,7 +110,7 @@ function parseQuickAdd(input) {
 }
 
 // ── ZoomBar component ─────────────────────────────────────────────────────────
-function ZoomBar({ horizon, onZoom }) {
+function ZoomBar({ horizon, onZoom, accentColor }) {
   const activeLabel = ZOOM_LEVELS.reduce((a, b) =>
     Math.abs(Math.log(b.days) - Math.log(horizon)) < Math.abs(Math.log(a.days) - Math.log(horizon)) ? b : a
   ).label
@@ -127,11 +127,11 @@ function ZoomBar({ horizon, onZoom }) {
             <button
               key={level.label}
               onClick={() => onZoom(level.days)}
-              className={`w-full py-0.5 text-center text-[9px] font-mono tracking-wide transition-all ${
-                isActive
-                  ? 'text-[#00ff41] bg-[#00ff4118] font-semibold'
-                  : 'text-white/18 hover:text-white/55 hover:bg-white/4'
-              }`}
+              className="w-full py-0.5 text-center text-[9px] font-mono tracking-wide transition-all"
+              style={isActive
+                ? { color: accentColor, background: accentColor + '18', fontWeight: 600 }
+                : { color: 'rgba(255,255,255,0.18)' }
+              }
               title={`Zoom to ${level.label}`}
             >
               {level.label}
@@ -145,20 +145,33 @@ function ZoomBar({ horizon, onZoom }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 export default function RadarView() {
+  // ── Context ──────────────────────────────────────────────────────────────
+  const categories    = useCategories()
+  const { theme }     = useApp()
+  const radarSettings = useRadarSettings()
+
   const svgRef   = useRef(null)
   const sweepRef = useRef(null)
   const simRef   = useRef(null)
   const quickRef = useRef(null)
 
+  // Sweep speed ref — readable by mount-once rAF
+  const sweepSpeedRef = useRef(0.35)
+  useEffect(() => {
+    sweepSpeedRef.current = radarSettings.sweepSpeed === 'slow' ? 0.15
+      : radarSettings.sweepSpeed === 'fast' ? 0.7
+      : 0.35
+  }, [radarSettings.sweepSpeed])
+
   // Zoom — animated via rAF; refs let the mount-once rAF loop read latest values
-  const horizonRef       = useRef(14)
-  const targetHorizonRef = useRef(14)
+  const horizonRef       = useRef(radarSettings.defaultZoom)
+  const targetHorizonRef = useRef(radarSettings.defaultZoom)
   const maxRRef          = useRef(0)
   const cxRef            = useRef(0)
   const cyRef            = useRef(0)
   const blipNodesRef     = useRef([])
 
-  const [horizon,  setHorizon]  = useState(14)
+  const [horizon,  setHorizon]  = useState(radarSettings.defaultZoom)
   const [size,     setSize]     = useState({ w: 800, h: 600 })
   const [selected, setSelected] = useState(null)
   const [editTarget, setEdit]   = useState(null)
@@ -173,10 +186,18 @@ export default function RadarView() {
   const [quickPreview, setQuickPreview] = useState(null)
   const [quickSaved,   setQuickSaved]   = useState(false)
 
-  // Category filters
+  // Category filters — initialise from current categories; sync when user adds/removes
   const [activeCategories, setActiveCategories] = useState(
-    () => new Set(CATEGORIES.map(c => c.id))
+    () => new Set(categories.map(c => c.id))
   )
+  useEffect(() => {
+    setActiveCategories(prev => {
+      const next = new Set(prev)
+      categories.forEach(c => { if (!next.has(c.id)) next.add(c.id) })
+      return next
+    })
+  }, [categories])
+
   function toggleCategory(id) {
     setActiveCategories(prev => {
       const next = new Set(prev)
@@ -221,8 +242,8 @@ export default function RadarView() {
     function tick() {
       const bx = cxRef.current, by = cyRef.current, mx = maxRRef.current
 
-      // Sweep
-      sweepAngle = (sweepAngle + 0.35) % 360
+      // Sweep (speed driven by ref so settings changes apply live)
+      sweepAngle = (sweepAngle + sweepSpeedRef.current) % 360
       const sw = svgRef.current?.querySelector('#sweep-group')
       if (sw) sw.setAttribute('transform', `rotate(${sweepAngle},${bx},${by})`)
 
@@ -230,7 +251,7 @@ export default function RadarView() {
       const cur = horizonRef.current, tgt = targetHorizonRef.current
       const rel = Math.abs((tgt - cur) / Math.max(tgt, 0.01))
       if (rel > 0.003) {
-        const next = cur + (tgt - cur) * 0.07  // ← slower lerp = smoother feel
+        const next = cur + (tgt - cur) * 0.07
         horizonRef.current = next
         setHorizon(next)
 
@@ -247,14 +268,14 @@ export default function RadarView() {
           if (inner) {
             const ang = Math.atan2(y - by, x - bx) * 180 / Math.PI
             inner.setAttribute('transform', `rotate(${ang})`)
-            // Also scale the ellipse rx dynamically
+            // Scale the tangential axis (ry = duration) dynamically with zoom
             const hourPx = (mx * 0.85) / (next * 24)
             const durPx  = Math.max(4, Math.min(48, n.durationHours * hourPx))
             const el = inner.querySelector('ellipse')
-            if (el) el.setAttribute('rx', durPx)
+            if (el) el.setAttribute('ry', durPx)   // ry = time (tangential)
             const poly = inner.querySelector('polygon')
             if (poly) poly.setAttribute('points',
-              `${durPx},0 0,${n.impPx} ${-durPx},0 0,${-n.impPx}`)
+              `${n.impPx},0 0,${durPx} ${-n.impPx},0 0,${-durPx}`)
           }
         })
       }
@@ -271,9 +292,7 @@ export default function RadarView() {
     if (!el) return
     const onWheel = e => {
       e.preventDefault()
-      // Normalise delta across trackpads (high dpi) and mice (step = ~100)
       const norm = Math.sign(e.deltaY) * Math.min(Math.abs(e.deltaY), 120) / 120
-      // Each full "tick" changes horizon by ~15%
       const factor = Math.pow(1.15, norm)
       targetHorizonRef.current = Math.min(365, Math.max(0.25, targetHorizonRef.current * factor))
     }
@@ -337,13 +356,12 @@ export default function RadarView() {
       const d   = daysUntil(e.start)
       const r   = timeToRadius(d, maxR, horizon)
       const ang = categoryMidAngle(cat)
-      // Duration: use estimated hours if provided, else derive from start/end
       const durH = e.estimatedHours || Math.min(
         Math.max((new Date(e.end || e.start) - new Date(e.start)) / 3600000, 0.5),
         24
       )
-      const durPx = Math.max(4, Math.min(48, durH * hourPx))
-      const impPx = 3 + (e.importance || 3) * 1.8  // tangential half-width
+      const durPx = Math.max(4, Math.min(48, durH * hourPx))  // tangential = time
+      const impPx = 3 + (e.importance || 3) * 1.8              // radial = importance
       nodes.push({
         id: `e-${e.id}`, item: e, itemType: 'event',
         targetR: r, targetAng: ang,
@@ -361,8 +379,8 @@ export default function RadarView() {
       const r   = timeToRadius(d, maxR, horizon)
       const ang = categoryMidAngle(cat)
       const durH  = t.estimatedHours || 1
-      const durPx = Math.max(4, Math.min(48, durH * hourPx))
-      const impPx = 3 + (t.importance || 3) * 1.8
+      const durPx = Math.max(4, Math.min(48, durH * hourPx))  // tangential = time
+      const impPx = 3 + (t.importance || 3) * 1.8              // radial = importance
       nodes.push({
         id: `t-${t.id}`, item: t, itemType: 'task',
         targetR: r, targetAng: ang,
@@ -444,7 +462,7 @@ export default function RadarView() {
     const dist = Math.sqrt(dx*dx + dy*dy)
     if (dist > maxR || dist < 10) return
     const angleDeg = Math.atan2(dy, dx) * 180 / Math.PI
-    const cat = CATEGORIES.find(c => angleDeg >= c.startAngle && angleDeg < c.endAngle)
+    const cat = categories.find(c => angleDeg >= c.startAngle && angleDeg < c.endAngle)
     const frac = Math.max(0, (dist - maxR*0.05) / (maxR*0.85))
     const days = Math.round(Math.pow(horizon+1, frac) - 1)
     const date = new Date(); date.setDate(date.getDate() + days)
@@ -459,6 +477,12 @@ export default function RadarView() {
     else await deleteTask(selected.item.id)
     setSelected(null)
   }
+
+  // Derive accent variants from theme
+  const accent     = theme.accent
+  const accentDim  = theme.accentDim  // e.g. '#00ff4155'
+  const accentFaint = accent + '20'
+  const accentTiny  = accent + '0e'
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -502,15 +526,19 @@ export default function RadarView() {
       <div className="flex-1 flex overflow-hidden scanlines no-select">
 
         {/* ZoomBar */}
-        <ZoomBar horizon={horizon} onZoom={days => { targetHorizonRef.current = days }} />
+        <ZoomBar
+          horizon={horizon}
+          onZoom={days => { targetHorizonRef.current = days }}
+          accentColor={accent}
+        />
 
         {/* Radar SVG */}
         <div className="flex-1 relative" onClick={handleRadarClick}>
           <svg ref={svgRef} className="absolute inset-0" style={{width:'100%',height:'100%'}} width={size.w} height={size.h}>
             <defs>
               <linearGradient id="sweepGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-                <stop offset="0%" stopColor="#00ff41" stopOpacity="0" />
-                <stop offset="100%" stopColor="#00ff41" stopOpacity="0.28" />
+                <stop offset="0%" stopColor={accent} stopOpacity="0" />
+                <stop offset="100%" stopColor={accent} stopOpacity="0.28" />
               </linearGradient>
               <radialGradient id="radarFade" cx="50%" cy="50%" r="50%">
                 <stop offset="60%" stopColor="#0a0f0a" stopOpacity="0" />
@@ -528,26 +556,26 @@ export default function RadarView() {
             </defs>
 
             {/* Background */}
-            <circle cx={cx} cy={cy} r={maxR+1} fill="#040a04" stroke="#00ff4120" strokeWidth="1" />
+            <circle cx={cx} cy={cy} r={maxR+1} fill="#040a04" stroke={accentFaint} strokeWidth="1" />
 
             {/* Wedges */}
             <g transform={`translate(${cx},${cy})`}>
-              {CATEGORIES.map(cat => (
+              {categories.map(cat => (
                 <path key={cat.id} d={wedgePath(cat)} fill={cat.color}
                   opacity={activeCategories.has(cat.id) ? 0.05 : 0.01} clipPath="url(#radarClip)" />
               ))}
             </g>
 
             {/* Dividers */}
-            {CATEGORIES.map(cat => {
+            {categories.map(cat => {
               const r = toRad(cat.startAngle)
               return <line key={cat.id} x1={cx} y1={cy}
                 x2={cx+maxR*Math.cos(r)} y2={cy+maxR*Math.sin(r)}
-                stroke="#00ff4122" strokeWidth="1" strokeDasharray="5 5" />
+                stroke={accentFaint} strokeWidth="1" strokeDasharray="5 5" />
             })}
 
             {/* Category labels */}
-            {CATEGORIES.map(cat => {
+            {categories.map(cat => {
               const mid = toRad((cat.startAngle+cat.endAngle)/2), lr = maxR*0.93
               return (
                 <text key={cat.id} x={cx+lr*Math.cos(mid)} y={cy+lr*Math.sin(mid)}
@@ -563,36 +591,41 @@ export default function RadarView() {
             {dynamicRings.map(ring => {
               const r    = timeToRadius(ring.d, maxR, horizon)
               const heat = heatMap[ring.l] || 0
-              const col  = heat===0?'#00ff41':heat<=2?'#80ff80':heat<=4?'#ffcc44':'#ff6644'
+              const col  = heat===0?accent:heat<=2?'#80ff80':heat<=4?'#ffcc44':'#ff6644'
               const op   = heat===0 ? 0.12 : Math.min(0.12 + heat*0.08, 0.5)
               return (
                 <g key={ring.l}>
                   <circle cx={cx} cy={cy} r={r} fill="none" stroke={col} strokeWidth="1" strokeOpacity={op} />
                   {heat>=2 && <circle cx={cx} cy={cy} r={r} fill="none" stroke={col} strokeWidth="6" strokeOpacity={0.04} />}
-                  <text x={cx+r*Math.cos(toRad(-82))} y={cy+r*Math.sin(toRad(-82))-4}
-                    fill={col} fillOpacity={Math.min(0.25+heat*0.08,0.6)}
-                    fontSize="8" fontFamily="JetBrains Mono, monospace" letterSpacing="1.5" textAnchor="middle">
-                    {ring.l}
-                  </text>
+                  {radarSettings.showRingLabels && (
+                    <text x={cx+r*Math.cos(toRad(-82))} y={cy+r*Math.sin(toRad(-82))-4}
+                      fill={col} fillOpacity={Math.min(0.25+heat*0.08,0.6)}
+                      fontSize="8" fontFamily="JetBrains Mono, monospace" letterSpacing="1.5" textAnchor="middle">
+                      {ring.l}
+                    </text>
+                  )}
                 </g>
               )
             })}
 
             {/* Crosshairs */}
-            <line x1={cx-maxR} y1={cy} x2={cx+maxR} y2={cy} stroke="#00ff400e" strokeWidth="1"/>
-            <line x1={cx} y1={cy-maxR} x2={cx} y2={cy+maxR} stroke="#00ff400e" strokeWidth="1"/>
+            <line x1={cx-maxR} y1={cy} x2={cx+maxR} y2={cy} stroke={accentTiny} strokeWidth="1"/>
+            <line x1={cx} y1={cy-maxR} x2={cx} y2={cy+maxR} stroke={accentTiny} strokeWidth="1"/>
 
             {/* Sweep */}
             <g id="sweep-group">
               <path d={`M ${cx} ${cy} L ${cx+maxR} ${cy} A ${maxR} ${maxR} 0 0 0 ${cx+maxR*Math.cos(toRad(-55))} ${cy+maxR*Math.sin(toRad(-55))} Z`}
                 fill="url(#sweepGrad)" opacity="0.8" clipPath="url(#radarClip)" />
-              <line x1={cx} y1={cy} x2={cx+maxR} y2={cy} stroke="#00ff41" strokeWidth="1.5" opacity="0.65" />
+              <line x1={cx} y1={cy} x2={cx+maxR} y2={cy} stroke={accent} strokeWidth="1.5" opacity="0.65" />
             </g>
 
             {/* Edge fade */}
             <circle cx={cx} cy={cy} r={maxR} fill="url(#radarFade)" pointerEvents="none" />
 
-            {/* ── Blips — ellipse/diamond oriented radially ── */}
+            {/* ── Blips — ellipse/diamond oriented radially ──
+                rx = importance (radial length)
+                ry = time/duration (tangential width)
+            */}
             {blipNodes.map(n => {
               const isSel = selected?.item?.id === n.item.id && selected?.type === n.itemType
               const { durPx, impPx, initAngle, isRecurrence, color } = n
@@ -604,21 +637,21 @@ export default function RadarView() {
 
                   {/* Radially-oriented inner group */}
                   <g data-blip-inner transform={`rotate(${initAngle})`}>
-                    {/* Outer pulse outline */}
+                    {/* Outer pulse outline — rx=importance(radial), ry=time(tangential) */}
                     {n.itemType === 'event'
-                      ? <ellipse rx={durPx+5} ry={impPx+4} fill="none" stroke={color}
+                      ? <ellipse rx={impPx+5} ry={durPx+4} fill="none" stroke={color}
                           strokeWidth="1" strokeDasharray={isRecurrence?'3 3':undefined}
                           opacity={isSel?0.75:0.2} />
-                      : <ellipse rx={durPx+5} ry={impPx+4} fill="none" stroke={color}
+                      : <ellipse rx={impPx+5} ry={durPx+4} fill="none" stroke={color}
                           strokeWidth="1" strokeDasharray="2 2" opacity={isSel?0.75:0.2} />
                     }
 
                     {/* Main shape */}
                     {n.itemType === 'event'
-                      ? <ellipse rx={durPx} ry={impPx} fill={color}
+                      ? <ellipse rx={impPx} ry={durPx} fill={color}
                           opacity={isRecurrence ? 0.5 : (isSel ? 1 : 0.88)} />
                       : <polygon
-                          points={`${durPx},0 0,${impPx} ${-durPx},0 0,${-impPx}`}
+                          points={`${impPx},0 0,${durPx} ${-impPx},0 0,${-durPx}`}
                           fill={color} opacity={isSel ? 1 : 0.82} />
                     }
 
@@ -626,14 +659,14 @@ export default function RadarView() {
                     <circle r={2} fill="#040a04" />
                   </g>
 
-                  {/* Recurrence dot */}
-                  {isRecurrence && <circle r={2} cx={durPx-1} cy={0} fill={color} opacity={0.85} />}
+                  {/* Recurrence dot — on radial tip (impPx axis) */}
+                  {isRecurrence && <circle r={2} cx={impPx-1} cy={0} fill={color} opacity={0.85} />}
                 </g>
               )
             })}
 
             {/* Centre dot */}
-            <circle cx={cx} cy={cy} r={5} fill="#00ff41" opacity="0.9" />
+            <circle cx={cx} cy={cy} r={5} fill={accent} opacity="0.9" />
             <circle cx={cx} cy={cy} r={2} fill="#040a04" />
 
             {/* All-day ticks */}
@@ -655,7 +688,8 @@ export default function RadarView() {
           <div className="absolute top-3 right-3 pointer-events-none">
             <div className="flex items-center gap-2 bg-[#040a04]/80 border border-white/8 rounded px-2.5 py-1.5">
               <span className="text-[9px] text-white/25 font-mono tracking-widest">VIEW</span>
-              <span className="text-[11px] text-[#00ff41]/70 font-mono tracking-widest font-semibold">
+              <span className="text-[11px] font-mono tracking-widest font-semibold"
+                style={{ color: accent + 'b3' }}>
                 {getHorizonLabel(horizon)}
               </span>
             </div>
@@ -700,7 +734,7 @@ export default function RadarView() {
       {/* Bottom bar */}
       <div className="relative z-20 flex items-center justify-between px-4 py-2 bg-[#080d08]/80 border-t border-white/5">
         <div className="flex items-center gap-3 flex-wrap">
-          {CATEGORIES.map(cat => {
+          {categories.map(cat => {
             const isActive = activeCategories.has(cat.id)
             return (
               <button key={cat.id} onClick={() => toggleCategory(cat.id)}
@@ -712,7 +746,7 @@ export default function RadarView() {
             )
           })}
           <span className="text-[9px] text-white/12 font-mono ml-1">
-            ● event (length=hours, width=importance)  ◇ task  ↻ recurring
+            ● event (length=importance, width=time)  ◇ task  ↻ recurring
           </span>
         </div>
         <div className="flex gap-2 flex-shrink-0">
@@ -721,7 +755,10 @@ export default function RadarView() {
             + TASK
           </button>
           <button onClick={e => { e.stopPropagation(); setClickHint(null); setShowEvent(true) }}
-            className="px-3 py-1.5 bg-[#0d1a0d]/90 border border-[#00ff4133] text-[#00ff41] text-[10px] font-mono tracking-widest rounded hover:bg-[#00ff4115] transition-colors">
+            className="px-3 py-1.5 bg-[#0d1a0d]/90 text-[10px] font-mono tracking-widest rounded transition-colors"
+            style={{ border: `1px solid ${accent}33`, color: accent }}
+            onMouseEnter={e => e.currentTarget.style.background = accent + '15'}
+            onMouseLeave={e => e.currentTarget.style.background = 'rgba(13,26,13,0.9)'}>
             + EVENT
           </button>
         </div>
@@ -842,40 +879,44 @@ function TaskSidebar({ tasks, onSelect, selected, onOpenPriority, showPriority }
       </div>
       {/* Priority queue button */}
       <button onClick={onOpenPriority}
-        className={`px-3 py-2 text-[10px] font-mono tracking-widest border-t transition-colors flex items-center gap-2 ${
+        className={`px-3 py-2 text-[9px] font-mono tracking-widest border-t transition-colors ${
           showPriority
-            ? 'bg-[#00ff4115] border-[#00ff4133] text-[#00ff41]'
-            : 'border-white/8 text-white/30 hover:text-white/60 hover:bg-white/4'
+            ? 'text-[#fbbf24] bg-[#fbbf2415] border-[#fbbf2433]'
+            : 'text-white/25 border-white/10 hover:text-white/50'
         }`}>
-        <span>⚡</span>
-        <span>PRIORITY QUEUE</span>
+        ▲ PRIORITY QUEUE
       </button>
     </div>
   )
 }
 
-function TaskRow({ task: t, onSelect, selected, isOverdue }) {
-  const cat  = getCategoryById(t.category)
-  const days = daysUntil(t.dueDate)
-  const isSel = selected?.item?.id === t.id && selected?.type === 'task'
+// ── Task row ──────────────────────────────────────────────────────────────────
+function TaskRow({ task, onSelect, selected, isOverdue }) {
+  const isSel = selected?.item?.id === task.id && selected?.type === 'task'
+  const cat   = getCategoryById(task.category)
+  const days  = daysUntil(task.dueDate)
+
   return (
-    <div className={`w-full text-left px-3 py-2.5 border-b transition-colors ${isOverdue?'border-red-400/10':'border-white/5'} ${isSel?'bg-white/10':'hover:bg-white/5'}`}>
+    <button onClick={() => onSelect(task)}
+      className={`w-full text-left px-3 py-2 border-b border-white/5 transition-colors ${
+        isSel ? 'bg-white/8' : 'hover:bg-white/4'
+      }`}>
       <div className="flex items-start gap-1.5">
-        <button onClick={async e => { e.stopPropagation(); await toggleTask(t.id) }}
-          className="mt-0.5 w-3.5 h-3.5 flex-shrink-0 border rounded-sm flex items-center justify-center hover:border-white/50 transition-colors"
-          style={{ borderColor: cat?.color+'66' }}>
-          <span className="text-[8px]" style={{ color: cat?.color }}>✓</span>
-        </button>
-        <button onClick={() => onSelect(t)} className="flex-1 text-left min-w-0">
-          <div className="flex items-center gap-1 mb-0.5">
-            <span className="w-1.5 h-1.5 rotate-45 flex-shrink-0" style={{ background: cat?.color, borderRadius:'1px' }} />
-            <span className={`text-xs font-mono truncate leading-tight ${isOverdue?'text-red-300/80':'text-white/80'}`}>{t.title}</span>
-          </div>
-          <div className={`text-[10px] pl-3 font-mono ${isOverdue?'text-red-400/60':'text-white/30'}`}>
-            {days < 0 ? `${Math.abs(Math.round(days))}d AGO` : days < 1 ? 'TODAY' : `${Math.round(days)}d`}
-          </div>
-        </button>
+        <span className="text-[9px] mt-0.5 flex-shrink-0" style={{ color: cat?.color }}>◇</span>
+        <div className="flex-1 min-w-0">
+          <p className={`text-[10px] font-mono leading-snug truncate ${isOverdue ? 'text-red-300/80' : 'text-white/70'}`}>
+            {task.title}
+          </p>
+          <p className={`text-[9px] font-mono mt-0.5 ${isOverdue ? 'text-red-400/60' : 'text-white/30'}`}>
+            {isOverdue
+              ? `${Math.abs(Math.round(days))}d OVERDUE`
+              : days < 1 ? 'TODAY'
+              : days < 2 ? 'TOMORROW'
+              : `${Math.round(days)}d`
+            }
+          </p>
+        </div>
       </div>
-    </div>
+    </button>
   )
 }

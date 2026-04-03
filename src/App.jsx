@@ -4,6 +4,7 @@ import Navigation from './components/Navigation'
 import RadarView from './views/RadarView'
 import NotesView from './views/NotesView'
 import UniverseView from './views/UniverseView'
+import SettingsView from './views/SettingsView'
 
 export default function App() {
   return (
@@ -16,6 +17,7 @@ export default function App() {
               <Route path="/"         element={<RadarView />} />
               <Route path="/notes"    element={<NotesView />} />
               <Route path="/universe" element={<UniverseView />} />
+              <Route path="/settings" element={<SettingsView />} />
             </Routes>
           </main>
         </div>
