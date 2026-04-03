@@ -2,6 +2,17 @@ import { useState } from 'react'
 import { addEvent, updateEvent } from '../db/hooks'
 import { CATEGORIES } from '../context/AppContext'
 
+const EFFORT_OPTIONS = [
+  { value: 0.25, label: '15m' },
+  { value: 0.5,  label: '30m' },
+  { value: 1,    label: '1h'  },
+  { value: 2,    label: '2h'  },
+  { value: 3,    label: '3h'  },
+  { value: 4,    label: '4h'  },
+  { value: 6,    label: '6h'  },
+  { value: 8,    label: '8h'  },
+]
+
 const RECURRENCE_OPTIONS = [
   { value: 'none',     label: 'NONE'      },
   { value: 'daily',    label: 'DAILY'     },
@@ -21,8 +32,9 @@ export default function EventModal({ onClose, prefillCategory, prefillDate, edit
     importance:       editItem?.importance       || 3,
     allDay:           editItem?.allDay           ?? true,
     location:         editItem?.location         || '',
-    recurrenceType:   editItem?.recurrenceType   || 'none',
+    recurrenceType:    editItem?.recurrenceType    || 'none',
     recurrenceEndDate: editItem?.recurrenceEndDate || '',
+    estimatedHours:    editItem?.estimatedHours    || 1,
   })
   const [saving, setSaving] = useState(false)
 
@@ -39,8 +51,9 @@ export default function EventModal({ onClose, prefillCategory, prefillDate, edit
       importance:       Number(form.importance),
       allDay:           form.allDay,
       location:         form.location,
-      recurrenceType:   form.recurrenceType,
+      recurrenceType:    form.recurrenceType,
       recurrenceEndDate: form.recurrenceEndDate || null,
+      estimatedHours:    Number(form.estimatedHours),
     }
     if (isEdit) {
       await updateEvent(editItem.id, payload)
@@ -129,6 +142,26 @@ export default function EventModal({ onClose, prefillCategory, prefillDate, edit
             <input value={form.location} onChange={e => set('location', e.target.value)}
               placeholder="Where?"
               className="w-full bg-white/5 border border-white/10 rounded px-3 py-2 text-sm text-white outline-none focus:border-[#00ff4155] placeholder-white/20" />
+          </div>
+
+          {/* Estimated effort */}
+          <div>
+            <label className="text-[10px] text-white/40 tracking-widest block mb-2">
+              ESTIMATED EFFORT
+              <span className="ml-2 text-white/20 normal-case tracking-normal">(blip length on radar)</span>
+            </label>
+            <div className="grid grid-cols-4 gap-1.5">
+              {EFFORT_OPTIONS.map(opt => (
+                <button key={opt.value} onClick={() => set('estimatedHours', opt.value)}
+                  className={`py-1.5 rounded text-[10px] border transition-all tracking-wider ${
+                    form.estimatedHours === opt.value
+                      ? 'border-[#00ff41] text-[#00ff41] bg-[#00ff4110]'
+                      : 'border-white/10 text-white/35 hover:border-white/25 hover:text-white/60'
+                  }`}>
+                  {opt.label}
+                </button>
+              ))}
+            </div>
           </div>
 
           {/* ── Recurrence ── */}
