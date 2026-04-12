@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { addTask, updateTask } from '../db/hooks'
-import { CATEGORIES } from '../context/AppContext'
+import { useCategories } from '../context/AppContext'
 
 const EFFORT_OPTIONS = [
   { value: 0.25, label: '15m' },
@@ -14,6 +14,7 @@ const EFFORT_OPTIONS = [
 ]
 
 export default function TaskModal({ onClose, editItem }) {
+  const categories = useCategories()
   const isEdit = !!editItem
   const [form, setForm] = useState({
     title:          editItem?.title          || '',
@@ -75,7 +76,7 @@ export default function TaskModal({ onClose, editItem }) {
           <div>
             <label className="text-[10px] text-white/40 tracking-widest block mb-1">CATEGORY</label>
             <div className="grid grid-cols-2 gap-2">
-              {CATEGORIES.map(cat => (
+              {categories.map(cat => (
                 <button key={cat.id} onClick={() => set('category', cat.id)}
                   className={`px-3 py-2 rounded text-xs border transition-all ${
                     form.category === cat.id ? 'bg-white/8' : 'bg-white/5 border-white/10 hover:border-white/20'
