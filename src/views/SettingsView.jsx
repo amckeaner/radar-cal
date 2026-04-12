@@ -312,9 +312,14 @@ function RadarSection({ settings, onSave }) {
           <div className="flex gap-2">
             {SWEEP_SPEEDS.map(s => (
               <button key={s.id} onClick={() => set('sweepSpeed', s.id)}
+                style={local.sweepSpeed === s.id ? {
+                  borderColor: 'var(--rc-accent,#00ff41)',
+                  color: 'var(--rc-accent,#00ff41)',
+                  background: 'rgba(0,255,65,0.08)',
+                } : {}}
                 className={`flex-1 py-2 text-[10px] border rounded tracking-wider transition-all ${
                   local.sweepSpeed === s.id
-                    ? 'border-[var(--rc-accent,#00ff41)] text-[var(--rc-accent,#00ff41)] bg-[color-mix(in_srgb,var(--rc-accent,#00ff41)_10%,transparent)]'
+                    ? 'border-transparent'
                     : 'border-white/10 text-white/35 hover:border-white/25'
                 }`}>
                 {s.label}
